@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Balance Master</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: white;
+      font-family: sans-serif;
+      text-align: center;
+    }
+    canvas {
+      background: #222;
+      display: block;
+      margin: 20px auto;
+      border: 3px solid #00ffaa;
+      box-shadow: 0 0 10px #00ffaa;
+    }
+    #gameOver {
+      display: none;
+      font-size: 1.5rem;
+      margin-top: 20px;
+      color: #ff6666;
+    }
+    button {
+      padding: 10px 20px;
+      background: #00ffaa;
+      border: none;
+      color: black;
+      font-weight: bold;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    #scoreBoard {
+      display: none;
+      margin-top: 20px;
+      color: #00ffaa;
+    }
+    #scoreBoard table {
+      margin: 0 auto;
+      border-collapse: collapse;
+    }
+    #scoreBoard th, #scoreBoard td {
+      padding: 8px 16px;
+      border: 1px solid #00ffaa;
+    }
+  </style>
+</head>
+<body>
+  <audio src="Twisted Puzzle.mp3" controls autoplay loop></audio>
+  <h1>Balance Master ⚖️</h1>
+  <p>Controles: Flechas ← → para balancear | Poderes: 1 ⏳, 2 🨲, 3 🪤</p>
+  <canvas id="gameCanvas" width="500" height="400"></canvas>
+  <div id="gameOver">
+    💥 ¡Perdiste el equilibrio o se cayó un bloque!<br>
+    <button onclick="handleScoreSave()">Guardar Puntuación</button>
+    <button onclick="resetGame()">No Guardar</button>
+  </div>
+  <div id="scoreBoard"></div>
+  <audio id="bgMusic" src="Twisted_Puzzle.mp3" loop></audio>
+  <audio id="altMusic" src="Twisted_Puzzle1.mp3"></audio>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const bar = {
+      x: canvas.width / 2,
+      y: canvas.height / 2 + 100,
+      width: 200,
+      height: 20,
+      angle: 0,
+      speed: 0,
+      angularResistance: 0.985
+    };
+
+    let fallingBlocks = [];
+    let landedBlocks = [];
+    let gameOver = false;
+    let nextBlockTimer = 0;
+
+    const powers = {
+      slowTime: { active: false, duration: 3000, cooldown: 8000, lastUsed: -9999 },
+      stickyNext: { active: false, cooldown: 10000, lastUsed: -9999 },
+      stabilize: { active: false, duration: 3000, cooldown: 12000, lastUsed: -9999 }
+    };
+
+    let effects = [];
+    let gameStartTime = 0;
+    let gameEndTime = 0;
+
+    function spawnBlock() {
+      const offset = (Math.random() * 2 - 1) * (bar.width / 2 - 10);
+      let type, color, weight, friction;
+
+      if (powers.stickyNext.active) {
+        type = "pegajoso";
+        color = "#55ff55";
+        weight = 0.0005;
+        friction = 0.7;
+        powers.stickyNext.active = false;
+      } else {
+        const typeRand = Math.random();
+        if (typeRand < 0.33) {
+          type = "hielo";
+          color = "#66ccff";
+          weight = 0.0003;
+          friction = 0.92;
+        } else if (typeRand < 0.66) {
+          type = "pesado";
+          color = "#999999";
+          weight = 0.0012;
+          friction = 0.96;
+        } else {
+          type = "pegajoso";
+          color = "#55ff55";
+          weight = 0.0005;
+          friction = 0.7;
+        }
+      }
+
+      fallingBlocks.push({
+        offsetX: offset,
+        y: 0,
+        speedY: 1,
+        landed: false,
+        weight: weight,
+        size: 20,
+        vx: 0,
+        friction: friction,
+        color: color,
+        type: type
+      });
+    }
+
+    function drawBar() {
+      ctx.save();
+      ctx.translate(bar.x, bar.y);
+      ctx.rotate(bar.angle);
+      ctx.fillStyle = "#00ffaa";
+      ctx.fillRect(-bar.width / 2, -bar.height / 2, bar.width, bar.height);
+      if (powers.stabilize.active && Date.now() - powers.stabilize.lastUsed < powers.stabilize.duration) {
+        ctx.strokeStyle = "#00ffff";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(-bar.width / 2 - 5, -bar.height / 2 - 5, bar.width + 10, bar.height + 10);
+      }
+      landedBlocks.forEach(b => {
+        ctx.fillStyle = b.color;
+        ctx.fillRect(b.offsetX - b.size / 2, -bar.height / 2 - b.size, b.size, b.size);
+      });
+      ctx.restore();
+      fallingBlocks.forEach(b => {
+        const px = bar.x + Math.cos(bar.angle) * b.offsetX;
+        const py = b.y + bar.y;
+        ctx.fillStyle = b.color;
+        ctx.fillRect(px - b.size / 2, py - b.size / 2, b.size, b.size);
+      });
+    }
+
+    function drawEffects() {
+      const now = Date.now();
+      for (let i = effects.length - 1; i >= 0; i--) {
+        const fx = effects[i];
+        const age = now - fx.start;
+        if (age > fx.duration) {
+          effects.splice(i, 1);
+          continue;
+        }
+        if (fx.type === "slow") {
+          ctx.fillStyle = `rgba(100,200,255,${1 - age / fx.duration})`;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        if (fx.type === "sticky") {
+          ctx.strokeStyle = `rgba(80,255,80,${1 - age / fx.duration})`;
+          ctx.lineWidth = 10 * (1 - age / fx.duration);
+          ctx.strokeRect(5, 5, canvas.width - 10, canvas.height - 10);
+        }
+      }
+    }
+
+    function update(dt) {
+      if (gameOver) return;
+      const now = Date.now();
+      const timeScale = powers.slowTime.active && now - powers.slowTime.lastUsed < powers.slowTime.duration ? 0.3 : 1;
+      const stabilizeActive = powers.stabilize.active && now - powers.stabilize.lastUsed < powers.stabilize.duration;
+
+      let torque = 0;
+      for (let block of landedBlocks) {
+        const adjustedOffset = block.offsetX / (bar.width / 2);
+        torque += adjustedOffset * block.weight;
+      }
+
+      if (keys["ArrowLeft"]) bar.speed -= 0.004 * timeScale;
+      if (keys["ArrowRight"]) bar.speed += 0.004 * timeScale;
+
+      bar.speed += torque;
+      bar.speed *= stabilizeActive ? 0.99 : bar.angularResistance;
+      bar.angle += bar.speed;
+
+      if (Math.abs(bar.angle) > Math.PI / 4) endGame();
+
+      for (let i = fallingBlocks.length - 1; i >= 0; i--) {
+        const b = fallingBlocks[i];
+        b.speedY += 0.02 * timeScale;
+        b.y += b.speedY;
+        const relativeY = bar.y - bar.height / 2 - b.size / 2;
+        if (b.y >= relativeY) {
+          b.y = relativeY;
+          landedBlocks.push(b);
+          fallingBlocks.splice(i, 1);
+        }
+      }
+
+      for (let i = landedBlocks.length - 1; i >= 0; i--) {
+        const b = landedBlocks[i];
+        b.vx += Math.sin(bar.angle) * 0.1;
+        b.vx *= b.friction;
+        b.offsetX += b.vx;
+        if (Math.abs(b.offsetX) > bar.width / 2) endGame();
+      }
+
+      nextBlockTimer -= dt * timeScale;
+      if (nextBlockTimer <= 0) {
+        spawnBlock();
+        nextBlockTimer = 3000 + Math.random() * 2000;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawBar();
+      drawEffects();
+    }
+
+    function endGame() {
+      gameOver = true;
+      bgMusic.pause();
+      gameEndTime = Date.now();
+      document.getElementById("gameOver").style.display = "block";
+    }
+
+    function handleScoreSave() {
+      const nickname = prompt("Ingresa tu nombre o apodo:");
+      if (!nickname) return resetGame();
+      const timePlayed = ((gameEndTime - gameStartTime) / 1000).toFixed(1);
+      let scores = JSON.parse(localStorage.getItem("balanceScores")) || [];
+      scores.push({ name: nickname, time: parseFloat(timePlayed) });
+      scores.sort((a, b) => b.time - a.time);
+      localStorage.setItem("balanceScores", JSON.stringify(scores));
+      showScores(scores);
+    }
+
+    function showScores(scores) {
+      const board = document.getElementById("scoreBoard");
+      board.innerHTML = "<h2>Tabla de puntuaciones</h2><table><tr><th>Nombre</th><th>Tiempo (s)</th></tr>" +
+        scores.map(s => `<tr><td>${s.name}</td><td>${s.time}</td></tr>`).join("") + "</table>";
+      board.style.display = "block";
+    }
+
+    let lastTime = 0;
+    function gameLoop(time) {
+      const dt = time - lastTime;
+      lastTime = time;
+      update(dt);
+      draw();
+      if (!gameOver) requestAnimationFrame(gameLoop);
+    }
+
+    const keys = {};
+    window.addEventListener("keydown", e => {
+      keys[e.key] = true;
+      const now = Date.now();
+      if (e.key === "1" && now - powers.slowTime.lastUsed > powers.slowTime.cooldown) {
+        powers.slowTime.active = true;
+        powers.slowTime.lastUsed = now;
+        effects.push({ type: "slow", start: now, duration: 800 });
+        bgMusic.pause(); altMusic.currentTime = 0; altMusic.play(); setTimeout(() => bgMusic.play(), 1500);
+      }
+      if (e.key === "2" && now - powers.stickyNext.lastUsed > powers.stickyNext.cooldown) {
+        powers.stickyNext.active = true;
+        powers.stickyNext.lastUsed = now;
+        effects.push({ type: "sticky", start: now, duration: 600 });
+        bgMusic.pause(); altMusic.currentTime = 0; altMusic.play(); setTimeout(() => bgMusic.play(), 1500);
+      }
+      if (e.key === "3" && now - powers.stabilize.lastUsed > powers.stabilize.cooldown) {
+        powers.stabilize.active = true;
+        powers.stabilize.lastUsed = now;
+        bgMusic.pause(); altMusic.currentTime = 0; altMusic.play(); setTimeout(() => bgMusic.play(), 1500);
+      }
+    });
+    window.addEventListener("keyup", e => keys[e.key] = false);
+
+    function resetGame() {
+      bar.angle = 0;
+      bar.speed = 0;
+      fallingBlocks = [];
+      landedBlocks = [];
+      gameOver = false;
+      nextBlockTimer = 1500;
+      effects = [];
+      document.getElementById("gameOver").style.display = "none";
+      document.getElementById("scoreBoard").style.display = "none";
+      bgMusic.currentTime = 0;
+      bgMusic.play();
+      gameStartTime = Date.now();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function initializeDefaultScores() {
+      if (!localStorage.getItem("balanceScores")) {
+        const defaultScores = [
+          { name: "Maximo", time: 120.5 },
+          { name: "Ana", time: 110.2 },
+          { name: "Roberto", time: 98.7 },
+          { name: "Sofi", time: 85.4 },
+          { name: "Leo", time: 79.1 },
+          { name: "Patty", time: 70.3 },
+          { name: "Kira", time: 65.2 },
+          { name: "alecraf2", time: 40.3 },
+          { name: "Eskorpio05", time: 30 },
+          { name: "Mr One Chance", time: 20.25 }
+        ];
+        localStorage.setItem("balanceScores", JSON.stringify(defaultScores));
+      }
+    }
+
+    initializeDefaultScores();
+    resetGame();
+  </script>
+</body>
+</html>
